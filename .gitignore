@@ -1,0 +1,36 @@
+#
+*.iml
+
+# Rust artifacts
+/target/*
+!/target/deploy/
+
+# Solana config files
+.solana/
+
+# Anchor-specific files
+/.anchor/
+
+# MacOS system files
+.DS_Store
+
+# Node.js dependencies
+/node_modules/
+
+# Yarn log files
+yarn-error.log
+
+# IDE specific files (VSCode example)
+.vscode/
+
+# OS-specific files
+Thumbs.db
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
