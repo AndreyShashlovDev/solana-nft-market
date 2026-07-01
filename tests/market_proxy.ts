@@ -18,7 +18,6 @@ describe('market_proxy', () => {
         .accounts({
           config: configKeypair.publicKey,
           payer: anchor.getProvider().publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
         })
         .signers([configKeypair])
         .rpc()
@@ -78,5 +77,25 @@ describe('market_proxy', () => {
     } catch (error) {
       expect(error.message).to.include('Constraint')
     }
+  })
+
+  it('[ATTACK] should reject update_implementation when the real admin pubkey is supplied but does not sign', async () => {
+    try {
+      const newImplementation = anchor.web3.Keypair.generate().publicKey
+      await program.methods
+        .updateImplementation(newImplementation)
+        .accounts({
+          config: configKeypair.publicKey,
+          admin: admin.publicKey,
+        })
+        .rpc()
+
+      throw new Error('Should have failed without the admin signature')
+    } catch (error) {
+      expect(error.message).to.match(/Signature verification failed|signer/i)
+    }
+
+    const config = await program.account.marketConfig.fetch(configKeypair.publicKey)
+    expect(config.admin.toString()).to.equal(admin.publicKey.toString())
   })
 })

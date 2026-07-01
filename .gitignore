@@ -3,7 +3,7 @@
 
 # Rust artifacts
 /target/*
-!/target/deploy/
+!/target/deploy/*.json
 
 # Solana config files
 .solana/

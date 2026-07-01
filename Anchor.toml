@@ -9,12 +9,11 @@ market_proxy = "8Hyj7sDGt9CeDYaJVn3csspBGSNA9HZktriPNBL7TDdT"
 fixed_price_escrow = "BDHmaMsH8kpLB6uRwuK88LrHZogTCndF46hHBVjPCeJQ"
 simple_market = "D4R5iopiYTznXp2yKq7zTZHAGyVq77Qp9N15cCBnWaYn"
 
-[registry]
-url = "https://api.apr.dev"
-
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[hooks]

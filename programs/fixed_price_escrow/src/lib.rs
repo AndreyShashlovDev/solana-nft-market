@@ -24,7 +24,7 @@ pub mod fixed_price_escrow {
 
         token::transfer(
             CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.token_program.key(),
                 token::Transfer {
                     from: ctx.accounts.token_account.to_account_info(),
                     to: ctx.accounts.escrow_token_account.to_account_info(),
@@ -74,7 +74,7 @@ pub mod fixed_price_escrow {
 
         token::transfer(
             CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.token_program.key(),
                 token::Transfer {
                     from: ctx.accounts.escrow_token_account.to_account_info(),
                     to: ctx.accounts.buyer_token_account.to_account_info(),
@@ -102,7 +102,7 @@ pub mod fixed_price_escrow {
 
         token::transfer(
             CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.token_program.key(),
                 token::Transfer {
                     from: ctx.accounts.escrow_token_account.to_account_info(),
                     to: ctx.accounts.token_account.to_account_info(),

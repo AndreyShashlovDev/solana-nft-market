@@ -4,6 +4,7 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
   createMint,
+  getAssociatedTokenAddress,
   mintTo,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token'
@@ -134,7 +135,7 @@ describe('NFT Market Tests', () => {
 
     await marketProgram.methods
       .createOrder(PRICE, escrowProgram.programId, EXTRA_DATA)
-      .accounts({
+      .accountsPartial({
         seller: seller.publicKey,
         nftMint: nftMint,
         order: orderPda,
@@ -182,7 +183,7 @@ describe('NFT Market Tests', () => {
     // Create order first
     await marketProgram.methods
       .createOrder(PRICE, escrowProgram.programId, EXTRA_DATA)
-      .accounts({
+      .accountsPartial({
         seller: seller.publicKey,
         nftMint: nftMint,
         order: orderPda,
@@ -206,7 +207,7 @@ describe('NFT Market Tests', () => {
     // Cancel order
     await marketProgram.methods
       .cancelOrder()
-      .accounts({
+      .accountsPartial({
         seller: seller.publicKey,
         order: orderPda,
         escrowAccount: escrowPda,
@@ -214,7 +215,6 @@ describe('NFT Market Tests', () => {
         escrowTokenAccount,
         tokenAccount: sellerTokenAccount,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
         escrowProgram: escrowProgram.programId,
       })
       .signers([seller])
@@ -246,7 +246,7 @@ describe('NFT Market Tests', () => {
     // Create order first
     await marketProgram.methods
       .createOrder(PRICE, escrowProgram.programId, EXTRA_DATA)
-      .accounts({
+      .accountsPartial({
         seller: seller.publicKey,
         nftMint: nftMint,
         order: orderPda,
@@ -278,7 +278,7 @@ describe('NFT Market Tests', () => {
     // Execute order
     await marketProgram.methods
       .executeOrder(PRICE)
-      .accounts({
+      .accountsPartial({
         buyer: buyer.publicKey,
         seller: seller.publicKey,
         order: orderPda,
@@ -341,7 +341,7 @@ describe('NFT Market Tests', () => {
     try {
       await marketProgram.methods
         .executeOrder(PRICE)
-        .accounts({
+        .accountsPartial({
           buyer: buyer.publicKey,
           seller: seller.publicKey,
           order: orderPda,
@@ -366,7 +366,7 @@ describe('NFT Market Tests', () => {
     try {
       await marketProgram.methods
         .cancelOrder()
-        .accounts({
+        .accountsPartial({
           seller: seller.publicKey,
           order: orderPda,
           escrowAccount: escrowPda,
@@ -374,7 +374,6 @@ describe('NFT Market Tests', () => {
           escrowTokenAccount,
           tokenAccount: sellerTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
           escrowProgram: escrowProgram.programId,
         })
         .signers([seller])
@@ -383,5 +382,355 @@ describe('NFT Market Tests', () => {
     } catch (error) {
       // Expected error
     }
+  })
+
+  describe('Adversarial scenarios', () => {
+    async function createOrder() {
+      await marketProgram.methods
+        .createOrder(PRICE, escrowProgram.programId, EXTRA_DATA)
+        .accountsPartial({
+          seller: seller.publicKey,
+          nftMint: nftMint,
+          order: orderPda,
+          mintToOrder: mintToOrderPda,
+          escrowProgram: escrowProgram.programId,
+          escrowAccount: escrowPda,
+          escrowTokenAccount: escrowTokenAccount,
+          tokenAccount: sellerTokenAccount,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        })
+        .signers([seller])
+        .rpc()
+    }
+
+    it('[ATTACK] should reject execute_order when buyer underpays', async () => {
+      await createOrder()
+
+      const underpaidAmount = PRICE.sub(new anchor.BN(1))
+
+      try {
+        await marketProgram.methods
+          .executeOrder(underpaidAmount)
+          .accountsPartial({
+            buyer: buyer.publicKey,
+            seller: seller.publicKey,
+            order: orderPda,
+            mintToOrder: mintToOrderPda,
+            escrowAccount: escrowPda,
+            escrowTokenAccount,
+            buyerTokenAccount,
+            mint: nftMint,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([buyer])
+          .rpc()
+        expect.fail('Should not execute an order when payment_amount < price')
+      } catch (error) {
+        expect(error.message).to.match(/InsufficientPayment/i)
+      }
+
+      const escrow = await escrowProgram.account.escrow.fetch(escrowPda)
+      expect(escrow.price.toString()).to.equal(PRICE.toString())
+    })
+
+    it('[ATTACK] should reject redirecting the purchased NFT to a non-buyer token account', async () => {
+      await createOrder()
+
+      const attacker = Keypair.generate()
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(attacker.publicKey, AIRDROP_AMOUNT)
+      )
+      const attackerTokenAccount = await createAssociatedTokenAccount(
+        provider.connection,
+        attacker,
+        nftMint,
+        attacker.publicKey
+      )
+
+      try {
+        await marketProgram.methods
+          .executeOrder(PRICE)
+          .accountsPartial({
+            buyer: buyer.publicKey,
+            seller: seller.publicKey,
+            order: orderPda,
+            mintToOrder: mintToOrderPda,
+            escrowAccount: escrowPda,
+            escrowTokenAccount,
+            buyerTokenAccount: attackerTokenAccount, // <- mismatched on purpose
+            mint: nftMint,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([buyer])
+          .rpc()
+        expect.fail('Should not allow the NFT to land in a non-buyer-owned token account')
+      } catch (error) {
+        expect(error.message).to.match(/seeds|constraint/i)
+      }
+    })
+
+    it('[ATTACK] should reject mixing escrow accounts from a different order', async () => {
+      await createOrder()
+
+      const expensiveMint = await createMint(provider.connection, seller, seller.publicKey, null, 0)
+      const expensiveSellerTokenAccount = await createAssociatedTokenAccount(
+        provider.connection,
+        seller,
+        expensiveMint,
+        seller.publicKey
+      )
+      await mintTo(provider.connection, seller, expensiveMint, expensiveSellerTokenAccount, seller.publicKey, 1)
+
+      const [expensiveOrderPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('order'), seller.publicKey.toBuffer(), expensiveMint.toBuffer()],
+        marketProgram.programId
+      )
+      const [expensiveMintToOrderPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('mint_to_order'), expensiveMint.toBuffer()],
+        marketProgram.programId
+      )
+      const [expensiveEscrowPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('escrow'), seller.publicKey.toBuffer(), expensiveMint.toBuffer()],
+        escrowProgram.programId
+      )
+      const [expensiveEscrowTokenAccount] = PublicKey.findProgramAddressSync(
+        [Buffer.from('escrow_token'), seller.publicKey.toBuffer(), expensiveMint.toBuffer()],
+        escrowProgram.programId
+      )
+
+      const EXPENSIVE_PRICE = new anchor.BN(5 * LAMPORTS_PER_SOL)
+
+      await marketProgram.methods
+        .createOrder(EXPENSIVE_PRICE, escrowProgram.programId, EXTRA_DATA)
+        .accountsPartial({
+          seller: seller.publicKey,
+          nftMint: expensiveMint,
+          order: expensiveOrderPda,
+          mintToOrder: expensiveMintToOrderPda,
+          escrowProgram: escrowProgram.programId,
+          escrowAccount: expensiveEscrowPda,
+          escrowTokenAccount: expensiveEscrowTokenAccount,
+          tokenAccount: expensiveSellerTokenAccount,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        })
+        .signers([seller])
+        .rpc()
+
+      const buyerExpensiveTokenAccount = await getAssociatedTokenAddress(expensiveMint, buyer.publicKey)
+
+      try {
+        await marketProgram.methods
+          .executeOrder(PRICE) // cheap price
+          .accountsPartial({
+            buyer: buyer.publicKey,
+            seller: seller.publicKey,
+            order: orderPda, // cheap order
+            mintToOrder: mintToOrderPda,
+            escrowAccount: expensiveEscrowPda, // <- swapped in
+            escrowTokenAccount: expensiveEscrowTokenAccount, // <- swapped in
+            buyerTokenAccount: buyerExpensiveTokenAccount,
+            mint: expensiveMint, // <- swapped in
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([buyer])
+          .rpc()
+        expect.fail('Should not allow paying for one order while draining another order\'s escrow')
+      } catch (error) {
+        expect(error.message).to.match(/seeds|constraint/i)
+      }
+
+      const expensiveEscrow = await escrowProgram.account.escrow.fetch(expensiveEscrowPda)
+      expect(expensiveEscrow.price.toString()).to.equal(EXPENSIVE_PRICE.toString())
+    })
+
+    it('[ATTACK] should reject cancel_order from someone impersonating the seller', async () => {
+      await createOrder()
+
+      const attacker = Keypair.generate()
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(attacker.publicKey, AIRDROP_AMOUNT)
+      )
+
+      try {
+        await marketProgram.methods
+          .cancelOrder()
+          .accountsPartial({
+            seller: attacker.publicKey, // <- attacker claims to be the seller
+            order: orderPda, // <- but points at the REAL seller's order
+            escrowAccount: escrowPda,
+            mintToOrder: mintToOrderPda,
+            escrowTokenAccount,
+            tokenAccount: sellerTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([attacker])
+          .rpc()
+        expect.fail('An attacker should not be able to cancel someone else\'s order')
+      } catch (error) {
+        expect(error.message).to.match(/seeds|constraint/i)
+      }
+
+      const order = await marketProgram.account.order.fetch(orderPda)
+      expect(order.seller.toString()).to.equal(seller.publicKey.toString())
+    })
+
+    it('[ATTACK] should reject cancelling the same order twice', async () => {
+      await createOrder()
+
+      await marketProgram.methods
+        .cancelOrder()
+        .accountsPartial({
+          seller: seller.publicKey,
+          order: orderPda,
+          escrowAccount: escrowPda,
+          mintToOrder: mintToOrderPda,
+          escrowTokenAccount,
+          tokenAccount: sellerTokenAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          escrowProgram: escrowProgram.programId,
+        })
+        .signers([seller])
+        .rpc()
+
+      try {
+        await marketProgram.methods
+          .cancelOrder()
+          .accountsPartial({
+            seller: seller.publicKey,
+            order: orderPda,
+            escrowAccount: escrowPda,
+            mintToOrder: mintToOrderPda,
+            escrowTokenAccount,
+            tokenAccount: sellerTokenAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([seller])
+          .rpc()
+        expect.fail('Should not be able to cancel an already-closed order')
+      } catch (error) {
+        expect(error.message).to.match(/AccountNotInitialized|does not exist|3012/i)
+      }
+    })
+
+    it('[ATTACK] should reject creating a duplicate order for the same seller+mint', async () => {
+      await createOrder()
+
+      try {
+        await createOrder()
+        expect.fail('Should not be able to re-initialize an existing order PDA')
+      } catch (error) {
+        expect(error.message).to.match(/already in use/i)
+      }
+    })
+
+    it('[ATTACK] should reject an extra payload bigger than the reserved 512 bytes', async () => {
+      const oversizedExtra = Buffer.alloc(600, 1)
+
+      try {
+        await marketProgram.methods
+          .createOrder(PRICE, escrowProgram.programId, oversizedExtra)
+          .accountsPartial({
+            seller: seller.publicKey,
+            nftMint: nftMint,
+            order: orderPda,
+            mintToOrder: mintToOrderPda,
+            escrowProgram: escrowProgram.programId,
+            escrowAccount: escrowPda,
+            escrowTokenAccount: escrowTokenAccount,
+            tokenAccount: sellerTokenAccount,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .signers([seller])
+          .rpc()
+        expect.fail('Should not accept an extra payload larger than the account can hold')
+      } catch (error) {
+        expect(error.message).to.match(/size|serialize|encoding|memory|overrun|too large/i)
+      }
+    })
+
+    it('[ATTACK] should reject execute_order when the buyer cannot actually afford the price', async () => {
+      await createOrder()
+
+      const poorBuyer = Keypair.generate()
+      await provider.connection.confirmTransaction(
+        await provider.connection.requestAirdrop(poorBuyer.publicKey, 0.01 * LAMPORTS_PER_SOL)
+      )
+      const poorBuyerTokenAccount = await getAssociatedTokenAddress(nftMint, poorBuyer.publicKey)
+
+      try {
+        await marketProgram.methods
+          .executeOrder(PRICE)
+          .accountsPartial({
+            buyer: poorBuyer.publicKey,
+            seller: seller.publicKey,
+            order: orderPda,
+            mintToOrder: mintToOrderPda,
+            escrowAccount: escrowPda,
+            escrowTokenAccount,
+            buyerTokenAccount: poorBuyerTokenAccount,
+            mint: nftMint,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+            escrowProgram: escrowProgram.programId,
+          })
+          .signers([poorBuyer])
+          .rpc()
+        expect.fail('Should not execute an order the buyer cannot actually pay for')
+      } catch (error) {
+        expect(error.message).to.match(/insufficient lamports|insufficient funds/i)
+      }
+
+      const order = await marketProgram.account.order.fetch(orderPda)
+      expect(order.seller.toString()).to.equal(seller.publicKey.toString())
+    })
+
+    it('[ATTACK] should reject create_order pointing at a non-executable / fake escrow program', async () => {
+      const fakeEscrowProgram = Keypair.generate().publicKey
+
+      try {
+        await marketProgram.methods
+          .createOrder(PRICE, fakeEscrowProgram, EXTRA_DATA)
+          .accountsPartial({
+            seller: seller.publicKey,
+            nftMint: nftMint,
+            order: orderPda,
+            mintToOrder: mintToOrderPda,
+            escrowProgram: fakeEscrowProgram,
+            escrowAccount: escrowPda,
+            escrowTokenAccount: escrowTokenAccount,
+            tokenAccount: sellerTokenAccount,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .signers([seller])
+          .rpc()
+        expect.fail('Should not be able to create an order against a non-executable escrow program')
+      } catch (error) {
+        expect(error.message).to.match(/not executable|invalid program|AccountNotExecutable|Simulation failed/i)
+      }
+    })
   })
 })
